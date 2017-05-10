@@ -12,41 +12,28 @@ require "code_climate/test_reporter/payload_validator"
 module CodeClimate
   module TestReporter
     class Formatter
-      def format(result)
-        return true unless CodeClimate::TestReporter.run?
-
-        print "Coverage = #{result.source_files.covered_percent.round(2)}%. "
-
-        payload = to_payload(result)
-        PayloadValidator.validate(payload)
-        if write_to_file?
-          file_path = File.join(Dir.tmpdir, "codeclimate-test-coverage-#{SecureRandom.uuid}.json")
-          print "Coverage results saved to #{file_path}... "
-          File.open(file_path, "w") { |file| file.write(payload.to_json) }
-        else
-          client = Client.new
-          print "Sending report to #{client.host} for branch #{Git.branch_from_git_or_ci}... "
-          client.post_results(payload)
+      def format(results)
+        simplecov_results = results.map do |command_name, data|
+          SimpleCov::Result.from_hash(command_name => data)
         end
 
-        puts "done."
-        true
-      rescue => ex
-        puts ExceptionMessage.new(ex).message
-        false
+        simplecov_result =
+          if simplecov_results.size == 1
+            simplecov_results.first
+          else
+            merge_results(simplecov_results)
+          end
+
+        payload = to_payload(simplecov_result)
+        PayloadValidator.validate(payload)
+
+        payload
       end
 
-      # actually private ...
-      def short_filename(filename)
-        return filename unless ::SimpleCov.root
-        filename = filename.gsub(/^#{::SimpleCov.root}/, ".").gsub(/^\.\//, "")
-        apply_prefix filename
-      end
-
-    private
+      private
 
       def partial?
-        tddium?
+        CodeClimate::TestReporter.tddium?
       end
 
       def to_payload(result)
@@ -62,7 +49,7 @@ module CodeClimate
           end
 
           {
-            name:             short_filename(file.filename),
+            name:             ShortenFilename.new(file.filename).short_filename,
             blob_id:          CalculateBlob.new(file.filename).blob_id,
             coverage:         file.coverage.to_json,
             covered_percent:  round(file.covered_percent, 2),
@@ -70,8 +57,8 @@ module CodeClimate
             line_counts: {
               total:    file.lines.count,
               covered:  file.covered_lines.count,
-              missed:   file.missed_lines.count
-            }
+              missed:   file.missed_lines.count,
+            },
           }
         end
 
@@ -85,18 +72,13 @@ module CodeClimate
           partial:          partial?,
           git: Git.info,
           environment: {
-            test_framework: result.command_name.downcase,
             pwd:            Dir.pwd,
             rails_root:     (Rails.root.to_s rescue nil),
             simplecov_root: ::SimpleCov.root,
-            gem_version:    VERSION
+            gem_version:    VERSION,
           },
-          ci_service: ci_service_data
+          ci_service: CodeClimate::TestReporter.ci_service_data,
         }
-      end
-
-      def tddium?
-        ci_service_data && ci_service_data[:name] == "tddium"
       end
 
       # Convert to Float before rounding.
@@ -105,19 +87,17 @@ module CodeClimate
         Float(numeric).round(precision)
       end
 
-      def write_to_file?
-        warn "TO_FILE is deprecated, use CODECLIMATE_TO_FILE" if ENV["TO_FILE"]
-        tddium? || ENV["CODECLIMATE_TO_FILE"] || ENV["TO_FILE"]
-      end
-
-      def apply_prefix filename
-        prefix = CodeClimate::TestReporter.configuration.path_prefix
-        return filename if prefix.nil?
-        "#{prefix}/#{filename}"
-      end
-
-      def ci_service_data
-        @ci_service_data ||= Ci.service_data
+      # Re-implementation of Simplecov::ResultMerger#merged_result, which is
+      # needed because calling it directly gets you into caching land with files
+      # on disk.
+      def merge_results(results)
+        merged = {}
+        results.each do |result|
+          merged = result.original_result.merge_resultset(merged)
+        end
+        result = SimpleCov::Result.new(merged)
+        result.command_name = results.map(&:command_name).sort.join(", ")
+        result
       end
     end
   end

@@ -79,5 +79,40 @@ module CodeClimate::TestReporter
       end
     end
 
+    describe 'head_from_git_or_ci' do
+      it 'returns the head sha from git' do
+        expect(Git).to receive(:git).with("log -1 --pretty=format:'%H'").and_return("1234")
+
+        expect(Git.head_from_git_or_ci).to eq '1234'
+      end
+
+      it 'returns the head sha from ci if git is not available' do
+        expect(Git).to receive(:git).with("log -1 --pretty=format:'%H'").and_return("")
+        expect(Ci).to receive(:service_data).and_return({commit_sha: "4567"})
+
+        expect(Git.head_from_git_or_ci).to eq '4567'
+      end
+    end
+
+    describe 'committed_at_from_git_or_ci' do
+      it 'returns the committed_at from git' do
+        expect(Git.committed_at_from_git_or_ci).to eq Git.send(:committed_at_from_git)
+      end
+
+      it 'returns the committed_at from ci if there is no git committed_at' do
+        expect(Git).to receive(:committed_at_from_git).and_return(nil)
+        allow(Ci).to receive(:service_data).and_return({committed_at: '1484768698'})
+
+        expect(Git.committed_at_from_git_or_ci).to eq 1484768698
+      end
+
+      it 'returns nil when there is neither' do
+        expect(Git).to receive(:committed_at_from_git).and_return(nil)
+        allow(Ci).to receive(:service_data).and_return({})
+
+        expect(Git.committed_at_from_git_or_ci).to be_nil
+      end
+    end
+
   end
 end
